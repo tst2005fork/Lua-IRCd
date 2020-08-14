@@ -66,25 +66,25 @@ local function ircWrite(clientInfo, text)
 	end
 end
 
-function SendRawMessage(clientInfo, text)
+local function SendRawMessage(clientInfo, text)
 	ircWrite(clientInfo, ":" .. config.hostname .. " " .. text)
 end
 
 
-function SendServerClientMessage(clientInfo, code, text)
+local function SendServerClientMessage(clientInfo, code, text)
 	local codeStr = tostring(code)
 	if codeStr:len() == 1 then
 		codeStr = '00' .. codeStr
 	elseif codeStr:len() == 2 then
 		codeStr = '0' .. codeStr
 	end
-
-	ircWrite(clientInfo, ":" .. config.hostname .. " " .. codeStr .. " " .. clientInfo.Nick .. " " .. text)
+-- FIXME: clientInfo.Nick can be nil
+	ircWrite(clientInfo, ":" .. config.hostname .. " " .. codeStr .. " " .. (clientInfo.Nick or "-") .. " " .. text)
 
 end
 
 
-function SendUserMessage(clientInfo, target, text, noSelf)
+local function SendUserMessage(clientInfo, target, text, noSelf)
 
 	local userStr = ":" .. clientInfo.Nick .. "!" .. clientInfo.User .. "@" .. clientInfo.Host
 
@@ -170,7 +170,7 @@ local function Command_LIST(clientInfo, args)
 	end
 	for channelName, channel in pairs(clientInfo.Channels) do
 
-SendServerClientMessage(clientInfo, 322, channelName .. " " .. channel.numUsers .. " :" .. channel.topic)
+		SendServerClientMessage(clientInfo, 322, channelName .. " " .. channel.numUsers .. " :" .. channel.topic)
 
 	end
 	SendServerClientMessage(clientInfo, 323, ":End of LIST")
@@ -183,7 +183,7 @@ local function Command_MODE(clientInfo, args)
 	if not target then return end
 
 	local args = {}
-	for arg in mode:gfind('([^ ]+) *') do
+	for arg in mode:gmatch('([^ ]+) *') do
 		table.insert(args, arg)
 	end
 
@@ -235,26 +235,28 @@ local function Command_NOTICE(clientInfo, args)
 	local _, _, target, message = args:find("^([^ ]+) +:(.*)$")
 	if not target then return end
 
-SendUserMessage(clientInfo, target, "NOTICE " .. target .. " :" .. message, true)
+	SendUserMessage(clientInfo, target, "NOTICE " .. target .. " :" .. message, true)
 
 end
 
 
-function Command_PART(clientInfo, args, command, text)
+local function Command_PART(clientInfo, args, command, text)
 	if not args then return end
+
+--FIXME: "PART #test" no reason => bug: nothing done
 	local _, _, target, message = args:find("^([^ ]+) +(.*)$")
 	if not target then return end
 
-	for channelName in args:gfind('(#%w+),-') do
+	for channelName in args:gmatch('(#%w+),-') do
 		local channel = ChannelInfo[channelName]
 		if channel then
 			if command == "QUIT" then
-
-SendUserMessage(clientInfo, channelName, "QUIT " .. text, true)
+			-- FIXME: do not send each part ! ... just quit.
+				SendUserMessage(clientInfo, channelName, "QUIT " .. text, true)
 
 			elseif command then
 
-SendUserMessage(clientInfo, channelName, command .. " " .. channelName .. " " .. message)
+				SendUserMessage(clientInfo, channelName, command .. " " .. channelName .. " " .. message)
 
 			end
 
@@ -283,7 +285,7 @@ local function Command_PRIVMSG(clientInfo, args)
 	local _, _, target, message = args:find("^([^ ]+) +:(.*)$")
 	if not target then return end
 
-SendUserMessage(clientInfo, target, "PRIVMSG " .. target .. " :" .. message, true)
+		SendUserMessage(clientInfo, target, "PRIVMSG " .. target .. " :" .. message, true)
 
 	if not inPrivateMessage then
 		local func = ChannelPrivateMessage[target]
@@ -298,9 +300,10 @@ SendUserMessage(clientInfo, target, "PRIVMSG " .. target .. " :" .. message, tru
 end
 
 
-function Command_QUIT(clientInfo, message)
+local function Command_QUIT(clientInfo, message)
 	for channelName, channel in pairs(clientInfo.Channels) do
 		if channel.userList[clientInfo] then
+-- FIXME: do not use PART for QUIT...
 			Command_PART(clientInfo, channelName, "QUIT", message)
 		end
 	end
@@ -314,17 +317,17 @@ end
 
 
 
-function Command_USERHOST(clientInfo, args)
+local function Command_USERHOST(clientInfo, args)
 	if not args then return end
 	local _, _, nicks = args:find(":(.+)")
 	if not nicks then return end
 	local text = ""
-	for nick in nicks:gfind('(.*) -') do
+	for nick in nicks:gmatch('(.*) -') do
 		local nickClient = NickToClientInfo[nick]
 		if nickClient then
 			local nickInfo = ClientMap[nickClient]
 
-text = text .. nick .. "=+" .. nickClient.User .. "@" .. nickClient.Host .. " "
+			text = text .. nick .. "=+" .. nickClient.User .. "@" .. nickClient.Host .. " "
 
 		end
 	end
@@ -337,15 +340,11 @@ local function Command_WHO(clientInfo, args)
 	if channel then
 		handleClientWho(clientInfo, channel)
 --[[
-
-foreach {topic userlist usermode} [channelInfoOrReturn $fd $channel] break
-
-		foreach userfd $userlist mode $usermode {
-
-SendServerClientMessage $fd 352 "$channel ~[clientUser $userfd] [clientHost $userfd] [config hostname] $mode[clientNick $userfd] H :0 [clientRealName $userfd]"
-
-		}
-		SendServerClientMessage $fd 315 "$channel :End of /WHO list."
+	foreach {topic userlist usermode} [channelInfoOrReturn $fd $channel] break
+	foreach userfd $userlist mode $usermode {
+		SendServerClientMessage $fd 352 "$channel ~[clientUser $userfd] [clientHost $userfd] [config hostname] $mode[clientNick $userfd] H :0 [clientRealName $userfd]"
+	}
+	SendServerClientMessage $fd 315 "$channel :End of /WHO list."
 ]]--
 		return
 	end
@@ -447,7 +446,7 @@ local function ProcessClient(clientInfo)
 		if type(func) == "function" then
 			func(clientInfo, args)
 		else
-			SendServerClientMessage(clientInfo.Client, 421, line .. " :Unknown command")
+			SendServerClientMessage(clientInfo, 421, line .. " :Unknown command")
 		end
 	end
 end
