@@ -19,9 +19,11 @@ end
 local ChannelInfo = {}
 local ClientMap = {}
 local NickToClientInfo = {}
+
+-- events
 local ChannelPrivateMessage = { } -- nil ?
 
-local function newset()
+local function newset(self)
 	local reverse = {}
 	local set = {}
 	setmetatable(set, { __index = {
@@ -53,11 +55,17 @@ local function newset()
 	return set
 end
 
-local set = newset()
+local irc = {}
+irc.ChannelInfo = ChannelInfo
+irc.ClientMap = ClientMap
+irc.NickToClientInfo = NickToClientInfo
+irc.ChannelPrivateMessage = ChannelPrivateMessage
 
-local self = {set = set}
+local _set = newset(irc)
 
-local function ircWrite(self, clientInfo, text)
+irc.set=_set
+
+function irc:ircWrite(clientInfo, text)
 	local nick = ""
 	if clientInfo then nick = clientInfo.Nick or "" end
 	log('->' .. nick .. '  ' .. text)
@@ -65,15 +73,16 @@ local function ircWrite(self, clientInfo, text)
 	if error then
 		clientInfo.Client:close()
 		log("Removing client from set")
+		local set = self.set
 		set:remove(clientInfo.Client)
 	end
 end
 
-local function SendRawMessage(self, clientInfo, text)
-	ircWrite(self, clientInfo, ":" .. config.hostname .. " " .. text)
+function irc:SendRawMessage(clientInfo, text)
+	self:ircWrite(clientInfo, ":" .. config.hostname .. " " .. text)
 end
 
-local function SendServerClientMessage(self, clientInfo, code, text)
+function irc:SendServerClientMessage(clientInfo, code, text)
 	local codeStr = tostring(code)
 	if codeStr:len() == 1 then
 		codeStr = '00' .. codeStr
@@ -81,23 +90,24 @@ local function SendServerClientMessage(self, clientInfo, code, text)
 		codeStr = '0' .. codeStr
 	end
 	-- FIXME: clientInfo.Nick can be nil
-	ircWrite(self, clientInfo, ":" .. config.hostname .. " " .. codeStr .. " " .. (clientInfo.Nick or "-") .. " " .. text)
+	self:ircWrite(clientInfo, ":" .. config.hostname .. " " .. codeStr .. " " .. (clientInfo.Nick or "-") .. " " .. text)
 end
 
-local function SendUserMessage(self, clientInfo, target, text, noSelf)
+function irc:SendUserMessage(clientInfo, target, text, noSelf)
 	local userStr = ":" .. clientInfo.Nick .. "!" .. clientInfo.User .. "@" .. clientInfo.Host
 	if target:sub(1, 1) == "#" then
+--local ChannelInfo = self.ChannelInfo
 		local channel = ChannelInfo[target]
 		for _, user in pairs(channel.userList) do
 			if noSelf == true and user.clientInfo == clientInfo then
 			else
-				ircWrite(self, user.clientInfo, userStr .. " " .. text)
+				self:ircWrite(user.clientInfo, userStr .. " " .. text)
 			end
 		end
 	else
 		local targetInfo = ClientMap[target]
 		if targetInfo then
-			ircWrite(self, targetInfo.Client, userStr .. " " .. text)
+			self:ircWrite(targetInfo.Client, userStr .. " " .. text)
 		end
 	end
 end
@@ -106,30 +116,35 @@ local function Command_TOPIC(self, clientInfo, args)
 	print("Topic args: " .. args)
 	local _, _, target, topic = args:find("^([^ ]+) +:%s*(.*)%s*$")
 	if not target then return end
+--local ChannelInfo = self.ChannelInfo
 	local channel = ChannelInfo[target]
 	if not channel then return end
 	channel.topic = topic
 	if channel.topic == "" then
-		SendServerClientMessage(self, clientInfo, 331, channel.name .. " :No topic is set")
+		self:SendServerClientMessage(clientInfo, 331, channel.name .. " :No topic is set")
 	else
-		SendServerClientMessage(self, clientInfo, 332, channel.name .. " :" .. channel.topic)
+		self:SendServerClientMessage(clientInfo, 332, channel.name .. " :" .. channel.topic)
 	end
 end
 
 local function Command_NAMES(self, clientInfo, channelName)
 	if not channelName then return end
+--local ChannelInfo = self.ChannelInfo
+
 	local channel = ChannelInfo[channelName]
 	if channel then
 		local users = ""
 		for userClientInfo, user in pairs(channel.userList) do
 			users = users .. user.mode .. userClientInfo.Nick .. " "
 		end
-		SendServerClientMessage(self, clientInfo, 353, "= " .. channel.name .. " :" .. users)
+		self:SendServerClientMessage(clientInfo, 353, "= " .. channel.name .. " :" .. users)
 	end
-	SendServerClientMessage(self, clientInfo, 366, channelName .. " :End of /NAMES list.")
+	self:SendServerClientMessage(clientInfo, 366, channelName .. " :End of /NAMES list.")
 end
 
 local function Command_JOIN(self, clientInfo, channels)
+--local ChannelInfo = self.ChannelInfo
+
 	for channelName in channels:gmatch('([^ ,]+),*') do
 		local channel = ChannelInfo[channelName]
 		if not channel then
@@ -148,7 +163,7 @@ local function Command_JOIN(self, clientInfo, channels)
 			clientInfo.Channels[channelName] = channel
 			channel.userList[clientInfo] = { clientInfo = clientInfo, mode = channel.numUsers > 0 and "" or "@" }
 			channel.numUsers = channel.numUsers + 1
-			SendUserMessage(self, clientInfo, channelName, "JOIN " .. channelName)
+			self:SendUserMessage(clientInfo, channelName, "JOIN " .. channelName)
 			Command_TOPIC(self, clientInfo, channelName .. " :" .. channel.topic)
 			Command_NAMES(self, clientInfo, channelName)
 		end
@@ -161,9 +176,9 @@ local function Command_LIST(self, clientInfo, args)
 		local _, _, target = args:find("^:%s*(.+)%s*$")
 	end
 	for channelName, channel in pairs(clientInfo.Channels) do
-		SendServerClientMessage(self, clientInfo, 322, channelName .. " " .. channel.numUsers .. " :" .. channel.topic)
+		self:SendServerClientMessage(clientInfo, 322, channelName .. " " .. channel.numUsers .. " :" .. channel.topic)
 	end
-	SendServerClientMessage(self, clientInfo, 323, ":End of LIST")
+	self:SendServerClientMessage(clientInfo, 323, ":End of LIST")
 end
 
 local function Command_MODE(self, clientInfo, args)
@@ -175,6 +190,7 @@ local function Command_MODE(self, clientInfo, args)
 	for arg in mode:gmatch('([^ ]+) *') do
 		table.insert(args, arg)
 	end
+--local ChannelInfo = self.ChannelInfo
 
 	if target:sub(1, 1) == '#' then
 		local channel = ChannelInfo[target]
@@ -185,16 +201,16 @@ local function Command_MODE(self, clientInfo, args)
 			local channelUser = channel.userList[clientInfo]
 			if not channelUser then return end
 			if channelUser.mode ~= '@' then
-				SendServerClientMessage(self, clientInfo, 482, target .. " :You're not channel operator")
+				self:SendServerClientMessage(clientInfo, 482, target .. " :You're not channel operator")
 				return
 			end
 
 			local modeUser = channel.userList[modeClient]
 			modeUser.mode = arg[1] == '+o' and '@' or ''
 
-			SendUserMessage(self, clientInfo, target, "MODE " .. target .. " " .. mode)
+			self:SendUserMessage(clientInfo, target, "MODE " .. target .. " " .. mode)
 		else
-			SendServerClientMessage(self, clientInfo, 324, target)
+			self:SendServerClientMessage(clientInfo, 324, target)
 		end
 	end
 end
@@ -203,11 +219,11 @@ local function Command_NICK(self, clientInfo, nick)
 	if not nick then return end
 	local oldNick = clientInfo.Nick
 	if NickToClientInfo[nick] then
-		SendRawMessage(self, clientInfo, "433 * " .. nick .. " :Nickname is already in use")
+		self:SendRawMessage(clientInfo, "433 * " .. nick .. " :Nickname is already in use")
 		return
 	end
 	for channelName, channel in pairs(clientInfo.Channels) do
-		SendUserMessage(self, clientInfo, channelName, "NICK " .. nick)
+		self:SendUserMessage(clientInfo, channelName, "NICK " .. nick)
 	end
 	clientInfo.Nick = nick
 	NickToClientInfo[nick] = NickToClientInfo[oldNick]
@@ -218,7 +234,7 @@ local function Command_NOTICE(self, clientInfo, args)
 	if not args then return end
 	local _, _, target, message = args:find("^([^ ]+) +:(.*)$")
 	if not target then return end
-	SendUserMessage(self, clientInfo, target, "NOTICE " .. target .. " :" .. message, true)
+	self:SendUserMessage(clientInfo, target, "NOTICE " .. target .. " :" .. message, true)
 end
 
 local function Command_PART(self, clientInfo, args, command, text)
@@ -227,15 +243,16 @@ local function Command_PART(self, clientInfo, args, command, text)
 --FIXME: "PART #test" no reason => bug: nothing done
 	local _, _, target, message = args:find("^([^ ]+) +(.*)$")
 	if not target then return end
+--local ChannelInfo = self.ChannelInfo
 
 	for channelName in args:gmatch('(#%w+),-') do
 		local channel = ChannelInfo[channelName]
 		if channel then
 			if command == "QUIT" then
 				-- FIXME: do not send each part ! ... just quit.
-				SendUserMessage(self, clientInfo, channelName, "QUIT " .. text, true)
+				self:SendUserMessage(clientInfo, channelName, "QUIT " .. text, true)
 			elseif command then
-				SendUserMessage(self, clientInfo, channelName, command .. " " .. channelName .. " " .. message)
+				self:SendUserMessage(clientInfo, channelName, command .. " " .. channelName .. " " .. message)
 			end
 
 			clientInfo.Channels[channelName] = nil
@@ -249,7 +266,7 @@ local function Command_PART(self, clientInfo, args, command, text)
 end
 
 local function Command_PING(self, clientInfo, message)
-	SendRawMessage(self, clientInfo, "PONG " .. config.hostname .. " " .. message)
+	self:SendRawMessage(clientInfo, "PONG " .. config.hostname .. " " .. message)
 end
 
 local function Command_PONG(self, clientInfo, message)
@@ -259,7 +276,7 @@ local function Command_PRIVMSG(self, clientInfo, args)
 	if not args then return end
 	local _, _, target, message = args:find("^([^ ]+) +:(.*)$")
 	if not target then return end
-	SendUserMessage(self, clientInfo, target, "PRIVMSG " .. target .. " :" .. message, true)
+	self:SendUserMessage(clientInfo, target, "PRIVMSG " .. target .. " :" .. message, true)
 
 	-- channel message
 	if not inPrivateMessage and ChannelPrivateMessage then
@@ -286,6 +303,7 @@ local function Command_QUIT(self, clientInfo, message)
 		NickToClientInfo[clientInfo.Nick] = nil
 	end
 	clientInfo.Client:close()
+	local set = self.set
 	set:remove(clientInfo.Client)
 end
 
@@ -303,7 +321,7 @@ local function Command_USERHOST(self, clientInfo, args)
 
 		end
 	end
-	SendServerClientMessage(self, clientInfo, 302, ":" .. text)
+	self:SendServerClientMessage(clientInfo, 302, ":" .. text)
 end
 
 local function Command_WHO(self, clientInfo, args)
@@ -325,17 +343,17 @@ local function Command_WHOIS(self, clientInfo, nick)
 	if not nick then return end
 	local targetInfo = ClientMap[nick]
 	if targetInfo then
-		SendServerClientMessage(self, clientInfo, 311, nick .. " ~" .. targetInfo.User .. " " .. targetInfo.Host .. " * :" .. targetInfo.RealName)
+		self:SendServerClientMessage(clientInfo, 311, nick .. " ~" .. targetInfo.User .. " " .. targetInfo.Host .. " * :" .. targetInfo.RealName)
 		local chans = ""
 		for channelName, channel in pairs(targetInfo.Channels) do
 			chans = chans .. channelName .. " "
 		end
 		if chans:len() > 1 then
-			SendServerClientMessage(self, clientInfo, 319, nick .. " :" .. chans)
+			self:SendServerClientMessage(clientInfo, 319, nick .. " :" .. chans)
 		end
-		SendServerClientMessage(self, clientInfo, 312, nick .. " " .. config.hostname .. " :" .. config.hostname)
+		self:SendServerClientMessage(clientInfo, 312, nick .. " " .. config.hostname .. " :" .. config.hostname)
 	end
-	SendServerClientMessage(self, clientInfo, 318, nick .. " :End of /WHOIS list.")
+	self:SendServerClientMessage(clientInfo, 318, nick .. " :End of /WHOIS list.")
 end
 
 local CommandDispatch =
@@ -356,8 +374,9 @@ local CommandDispatch =
 	USERHOST = Command_USERHOST,
 --missing:	NAMES = Command_NAMES,
 }
+irc.CommandDispatch = CommandDispatch
 
-local function ProcessClient(self, clientInfo)
+function irc:ProcessClient(clientInfo)
 	local line, error = clientInfo.Client:receive()
 	if error == 'closed' then
 		Command_QUIT(self, clientInfo, error .. " from client")
@@ -375,7 +394,7 @@ local function ProcessClient(self, clientInfo)
 		local _, _, nick = line:find("NICK (.+)")
 		if nick then
 			if NickToClientInfo[nick] then
-				SendRawMessage(self, clientInfo, "433 * " .. nick .. " :Nickname is already in use")
+				self:SendRawMessage(clientInfo, "433 * " .. nick .. " :Nickname is already in use")
 				return
 			end
 			clientInfo.Nick = nick
@@ -391,10 +410,10 @@ local function ProcessClient(self, clientInfo)
 
 		if clientInfo.Nick and clientInfo.User then
 			clientInfo.State = "REGISTERED"
-			SendServerClientMessage(self, clientInfo, 001, "Welcome to the LuaIRC server " .. clientInfo.Nick .. "!" .. clientInfo.User .. "@" .. clientInfo.Host)
-			SendServerClientMessage(self, clientInfo, 002, "Your host is " .. config.hostname .. ", running version " .. config.version)
-			SendServerClientMessage(self, clientInfo, 003, "This server was created ...")
-			SendServerClientMessage(self, clientInfo, 004, config.hostname .. " " .. config.version .. " aAbBcCdDeEfFGhHiIjkKlLmMnNopPQrRsStUvVwWxXyYzZ0123459*@ bcdefFhiIklmnoPqstv")
+			self:SendServerClientMessage(clientInfo, 001, "Welcome to the LuaIRC server " .. clientInfo.Nick .. "!" .. clientInfo.User .. "@" .. clientInfo.Host)
+			self:SendServerClientMessage(clientInfo, 002, "Your host is " .. config.hostname .. ", running version " .. config.version)
+			self:SendServerClientMessage(clientInfo, 003, "This server was created ...")
+			self:SendServerClientMessage(clientInfo, 004, config.hostname .. " " .. config.version .. " aAbBcCdDeEfFGhHiIjkKlLmMnNopPQrRsStUvVwWxXyYzZ0123459*@ bcdefFhiIklmnoPqstv")
 			NickToClientInfo[clientInfo.Nick] = clientInfo
 		end
 
@@ -405,15 +424,16 @@ local function ProcessClient(self, clientInfo)
 		if type(func) == "function" then
 			func(self, clientInfo, args)
 		else
-			SendServerClientMessage(self, clientInfo, 421, line .. " :Unknown command")
+			self:SendServerClientMessage(clientInfo, 421, line .. " :Unknown command")
 		end
 	end
 end
 
-local function RunServer(self)
+function irc:RunServer()
 	log("Opening server ("..config.hostname..":"..config.port..") ...")
 	local serverfd = assert(socket.bind(config.ip, config.port))
 	serverfd:settimeout(1) -- make sure we don't block in accept
+	local set = self.set
 	set:insert(serverfd)
 
 	while true do
@@ -427,11 +447,11 @@ local function RunServer(self)
 				if new then
 					new:settimeout(1)
 					log("Inserting client in set")
-					SendRawMessage(self, { Client = new }, "NOTICE AUTH :" .. config.version .. " initialized.")
+					self:SendRawMessage({ Client = new }, "NOTICE AUTH :" .. config.version .. " initialized.")
 					set:insert(new)
 				end
 			else
-				ProcessClient(self, ClientMap[input])
+				self:ProcessClient(ClientMap[input])
 			end
 		end
 	end
@@ -442,7 +462,7 @@ ChannelPrivateMessage['#lua'] = function(clientInfo, target, message)
 	local chunk = loadstring(message)
 	if chunk then
 		local ircPrint = function(...)
-			SendUserMessage(self, curClientInfo, curTarget, 'PRIVMSG ' .. curTarget .. " :" .. arg[1])
+			self:SendUserMessage(curClientInfo, curTarget, 'PRIVMSG ' .. curTarget .. " :" .. arg[1])
 		end
 		savePrint = print
 		print = ircPrint
@@ -452,4 +472,4 @@ ChannelPrivateMessage['#lua'] = function(clientInfo, target, message)
 end
 ]]--
 
-RunServer(self)
+irc:RunServer()
